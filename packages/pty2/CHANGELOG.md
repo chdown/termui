@@ -1,3 +1,11 @@
+## 0.10.0+coderx.1 (CoderX Git fork)
+
+- Preserve upstream 0.10.0 Unix signal-before-close behavior.
+- Add initial PTY geometry, ACK-safe UTF-8 decoding, and explicit output drain.
+- Add bounded, ordered input writing on a background isolate using a duplicated native handle.
+- Fix Windows output/process handle ownership and close ConPTY outside the reader lock.
+- Interface implementers must add `beginDrain`, `createInputWriter`, and (for `PtyCore`) `duplicateWriteHandle`.
+
 ## 0.10.0
 
 > Note: This release has breaking changes.

@@ -8,6 +8,13 @@ import 'package:termui_pty/termui_pty.dart';
 import 'package:test/test.dart';
 
 final class _FakeAckPseudoTerminal implements PseudoTerminal {
+  @override
+  Future<void> beginDrain() async {}
+
+  @override
+  PtyInputWriter createInputWriter(void Function(Object) onError) =>
+      throw UnsupportedError('This fake uses synchronous input');
+
   final StreamController<String> _outController = StreamController<String>();
   final Completer<int> _exitCompleter = Completer<int>();
   Completer<void>? ackCompleter;

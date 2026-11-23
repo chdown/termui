@@ -7,6 +7,13 @@ import 'package:test/test.dart';
 import 'package:pty2/pty2.dart';
 
 class MockPseudoTerminal implements PseudoTerminal {
+  @override
+  Future<void> beginDrain() async {}
+
+  @override
+  PtyInputWriter createInputWriter(void Function(Object) onError) =>
+      throw UnsupportedError('This fake uses synchronous input');
+
   final _outCtrl = StreamController<String>.broadcast();
   final _exitCompleter = Completer<int>();
 

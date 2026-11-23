@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:pty2/src/impl/conpty_bundle.dart';
+import 'package:pty2/src/input_writer.dart';
 import 'package:pty2/src/pty_core.dart';
 import 'package:win32/win32.dart' as win32;
 
@@ -194,13 +195,14 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
     Pointer<NativeFunction<_ClosePseudoConsoleNative>>? closePtyPtr,
   ) {
     if (pHPty.address == 0) return;
-    _withLock(pLock, () {
-      final hPty = pHPty.value;
-      if (hPty != 0) {
-        pHPty.value = 0;
-        _closePseudoConsole(win32.HPCON(hPty), closePtyPtr);
-      }
+    // ClosePseudoConsole may wait for output to drain. The reader needs
+    // this same lock to obtain the read handle for its next ReadFile.
+    final hPty = _withLock(pLock, () {
+      final handle = pHPty.value;
+      pHPty.value = 0;
+      return handle;
     });
+    if (hPty != 0) _closePseudoConsole(win32.HPCON(hPty), closePtyPtr);
   }
 
   static void _closeReadSideOnce(
@@ -212,20 +214,6 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
       final handle = pOutputReadSide.value;
       if (handle != 0) {
         pOutputReadSide.value = 0;
-        win32.CloseHandle(win32.HANDLE(Pointer.fromAddress(handle)));
-      }
-    });
-  }
-
-  static void _closeProcessOnce(
-    Pointer<IntPtr> pLock,
-    Pointer<IntPtr> pHProcess,
-  ) {
-    if (pHProcess.address == 0) return;
-    _withLock(pLock, () {
-      final handle = pHProcess.value;
-      if (handle != 0) {
-        pHProcess.value = 0;
         win32.CloseHandle(win32.HANDLE(Pointer.fromAddress(handle)));
       }
     });
@@ -256,10 +244,16 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
   }
 
   static ({win32.HPCON handle, _PseudoConsoleBindings? bindings})?
-  _createConPtyHandle(Arena arena, int inputReadAddress, int outWriteAddress) {
+  _createConPtyHandle(
+    Arena arena,
+    int inputReadAddress,
+    int outWriteAddress,
+    int cols,
+    int rows,
+  ) {
     final size = arena<win32.COORD>().ref
-      ..X = 80
-      ..Y = 25;
+      ..X = cols
+      ..Y = rows;
     final hInput = win32.HANDLE(Pointer.fromAddress(inputReadAddress));
     final hOutput = win32.HANDLE(Pointer.fromAddress(outWriteAddress));
     final bindings = _activeConPtyBindings;
@@ -318,6 +312,8 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
     win32.PWSTR pwstrCommandLine,
     win32.PCWSTR? pwstrCurrentDirectory,
     Pointer<Utf16>? pEnvironment,
+    int cols,
+    int rows,
   ) {
     final hInputReadPipe = arena<IntPtr>();
     final hInputWritePipe = arena<IntPtr>();
@@ -354,6 +350,8 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
       arena,
       hInputReadPipe.value,
       hOutWritePipe.value,
+      cols,
+      rows,
     );
     if (created == null) {
       closeConPtyPipes();
@@ -507,6 +505,8 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
     String? workingDirectory,
     Map<String, String>? environment,
     bool blocking = false,
+    int cols = 80,
+    int rows = 25,
   }) {
     return using<PtyCoreWindows>((arena) {
       final pwstrCommandLine = buildWindowsCommandLine(
@@ -524,6 +524,8 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
           pwstrCommandLine,
           pwstrCurrentDirectory,
           pEnvironment,
+          cols,
+          rows,
         );
         if (conPty != null) return conPty;
       }
@@ -732,7 +734,7 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
     _outputWriteSide = win32.HANDLE(nullptr);
     _closeRawHandle(_inputWriteSide.address);
     _inputWriteSide = win32.HANDLE(nullptr);
-    _closeReadSideOnce(_pLock, _pOutputReadSide);
+    // The reader owns the output handle until its final ReadFile returns.
     return ret;
   }
 
@@ -764,6 +766,23 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
       });
     });
   }
+
+  @override
+  PtyWriteHandle duplicateWriteHandle() => using((arena) {
+    final copy = arena<Pointer>();
+    final process = win32.GetCurrentProcess();
+    final result = win32.DuplicateHandle(
+      process,
+      _inputWriteSide,
+      process,
+      copy,
+      0,
+      false,
+      win32.DUPLICATE_SAME_ACCESS,
+    );
+    if (!result.value) throw StateError('DuplicateHandle: ${result.error}');
+    return _WindowsWriteHandle(copy.value.address);
+  });
 
   @override
   void write(List<int> data) {
@@ -883,10 +902,7 @@ final class PtyCoreWindowsWorker implements PtyCoreWorker {
       PtyCoreWindows._closePseudoConsoleOnce(pLock, pPty, closePtyPtr);
     }
 
-    final pProc = pHProcess;
-    if (pProc != null) {
-      PtyCoreWindows._closeProcessOnce(pLock, pProc);
-    }
+    // Only the exit waiter owns the process handle. EOF may arrive first.
   }
 }
 
@@ -934,4 +950,27 @@ final class WinEnv {
       freeEnvironmentStringsW(wstrings);
     }
   }
+}
+
+final class _WindowsWriteHandle implements PtyWriteHandle {
+  _WindowsWriteHandle(this.address);
+  final int address;
+  @override
+  void close() => win32.CloseHandle(win32.HANDLE(Pointer.fromAddress(address)));
+  @override
+  void write(Uint8List bytes) => using((arena) {
+    final handle = win32.HANDLE(Pointer.fromAddress(address));
+    const size = 4096;
+    final buf = arena<Uint8>(bytes.length.clamp(1, size));
+    final written = arena<Uint32>();
+    for (var offset = 0; offset < bytes.length;) {
+      final count = (bytes.length - offset).clamp(1, size);
+      buf.asTypedList(count).setRange(0, count, bytes, offset);
+      final result = win32.WriteFile(handle, buf, count, written, nullptr);
+      if (!result.value || written.value == 0) {
+        throw StateError('WriteFile: ${result.error}');
+      }
+      offset += written.value;
+    }
+  });
 }

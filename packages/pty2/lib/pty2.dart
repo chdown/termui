@@ -6,6 +6,9 @@ import 'package:pty2/src/impl/windows.dart';
 import 'package:pty2/src/pty.dart';
 import 'package:pty2/src/pty_core.dart';
 
+import 'package:pty2/src/input_writer.dart';
+
+export 'src/input_writer.dart';
 export 'src/pty.dart';
 export 'src/pty_error.dart';
 
@@ -64,6 +67,10 @@ abstract interface class PseudoTerminal {
     return path;
   }
 
+  /// Starts a process with [initialCols] columns and [initialRows] rows.
+  /// Rows default to 25 on Windows and 20 on Unix; columns default to 80.
+  /// Both dimensions must be in the range 1 through 32767.
+  ///
   /// Internal testing flag to allow non-blocking PTY on Windows.
   /// If [blocking] is [true], the PseudoTerminal starts in blocking mode
   /// (better suited for flutter release mode), otherwise in polling mode
@@ -81,10 +88,15 @@ abstract interface class PseudoTerminal {
     Map<String, String>? environment,
     bool ackProcessed = false,
     bool raw = false,
+    int initialCols = 80,
+    int? initialRows,
     // bool includeParentEnvironment = true,
     // bool runInShell = false,
     // ProcessStartMode mode = ProcessStartMode.normal,
   }) {
+    final rows = initialRows ?? (Platform.isWindows ? 25 : 20);
+    RangeError.checkValueInInterval(initialCols, 1, 32767, 'initialCols');
+    RangeError.checkValueInInterval(rows, 1, 32767, 'initialRows');
     late PtyCore core;
 
     if (Platform.isWindows) {
@@ -93,6 +105,8 @@ abstract interface class PseudoTerminal {
         arguments,
         workingDirectory: workingDirectory,
         environment: environment,
+        cols: initialCols,
+        rows: rows,
       );
     } else {
       core = PtyCoreUnix.start(
@@ -100,6 +114,8 @@ abstract interface class PseudoTerminal {
         arguments,
         workingDirectory: workingDirectory,
         environment: environment,
+        cols: initialCols,
+        rows: rows,
         raw: raw,
       );
     }
@@ -131,6 +147,11 @@ abstract interface class PseudoTerminal {
   /// The [input] string is encoded and sent to the process.
   void write(String input);
 
+  /// Creates a background input writer that owns a duplicated native handle.
+  ///
+  /// Close the writer during teardown; errors are delivered through [onError].
+  PtyInputWriter createInputWriter(void Function(Object) onError);
+
   /// A stream of output from the standard output and standard error of the pseudo-terminal.
   ///
   /// This stream emits the decoded output from the process.
@@ -141,6 +162,9 @@ abstract interface class PseudoTerminal {
   /// Used in conjunction with `ackProcessed: true` in [start] to manage flow control
   /// and prevent the terminal from overwhelming the Dart process.
   void ackProcessed();
+
+  /// Stop waiting for UI acknowledgements and allow the reader to drain.
+  Future<void> beginDrain();
 
   /// Resizes the pseudo-terminal window size.
   ///

@@ -3,6 +3,7 @@
 import 'dart:io';
 
 import 'dart:typed_data';
+import 'input_writer.dart';
 
 abstract interface class PtyCore {
   Uint8List? read();
@@ -18,6 +19,7 @@ abstract interface class PtyCore {
   // int get pid;
 
   void write(List<int> data);
+  PtyWriteHandle duplicateWriteHandle();
 
   void onReaderClosed();
 

@@ -7,6 +7,13 @@ import 'package:termui_test/termui_test.dart';
 import 'package:termui_pty/termui_pty.dart';
 
 class MockPty implements PseudoTerminal {
+  @override
+  Future<void> beginDrain() async {}
+
+  @override
+  PtyInputWriter createInputWriter(void Function(Object) onError) =>
+      throw UnsupportedError('This fake uses synchronous input');
+
   final _outController = StreamController<String>.broadcast();
   final _exitCodeCompleter = Completer<int>();
   List<String> written = [];

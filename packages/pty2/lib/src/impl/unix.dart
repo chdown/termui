@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+import 'package:pty2/src/input_writer.dart';
 import 'package:pty2/src/pty_core.dart';
 import 'package:pty2/src/pty_error.dart';
 import 'package:pty2/src/util/unix_const.dart';
@@ -193,6 +194,8 @@ final class PtyCoreUnix implements PtyCore, Finalizable {
     String? workingDirectory,
     Map<String, String>? environment,
     bool raw = false,
+    int cols = 80,
+    int rows = 20,
   }) {
     final effectiveEnv = _buildUnixEnvironment(environment);
     final resolvedExecutable = _resolveExecutablePath(
@@ -224,8 +227,8 @@ final class PtyCoreUnix implements PtyCore, Finalizable {
         argv,
         env,
         nativeWorkDir,
-        80,
-        20,
+        cols,
+        rows,
         raw ? 1 : 0,
         pPtm,
         pStatusFd,
@@ -380,6 +383,13 @@ final class PtyCoreUnix implements PtyCore, Finalizable {
   }
 
   @override
+  PtyWriteHandle duplicateWriteHandle() {
+    final fd = _pty2DupCloexec(_pty2GetPtm(_nativeMem));
+    if (fd < 0) throw StateError('Could not duplicate PTY input');
+    return _UnixWriteHandle(fd);
+  }
+
+  @override
   void write(List<int> data) {
     if (_pty2GetPtm(_nativeMem) < 0) return;
     var offset = 0;
@@ -515,4 +525,35 @@ final class PtyCoreUnixWorker implements PtyCoreWorker {
       _pPollFd = null;
     }
   }
+}
+
+final class _UnixWriteHandle implements PtyWriteHandle {
+  _UnixWriteHandle(this.fd);
+  final int fd;
+  @override
+  void close() => unix.close(fd);
+  @override
+  void write(Uint8List bytes) => using((arena) {
+    const size = 4096;
+    final buf = arena<Uint8>(bytes.length.clamp(1, size));
+    final pfd = arena<pollfd>();
+    pfd.ref
+      ..fd = fd
+      ..events = consts.POLLOUT;
+    for (var offset = 0; offset < bytes.length;) {
+      final count = (bytes.length - offset).clamp(1, size);
+      buf.asTypedList(count).setRange(0, count, bytes, offset);
+      final written = _pty2Write(fd, buf.cast(), count);
+      if (written > 0) {
+        offset += written;
+        continue;
+      }
+      if (written == -consts.EINTR) continue;
+      if (written == -consts.EAGAIN) {
+        _pty2Poll(pfd.cast(), 1, 100);
+        continue;
+      }
+      throw StateError('PTY write: $written');
+    }
+  });
 }

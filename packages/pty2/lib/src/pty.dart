@@ -24,6 +24,10 @@ abstract base class BasePseudoTerminal implements PseudoTerminal {
   // }
 
   @override
+  PtyInputWriter createInputWriter(void Function(Object) onError) =>
+      PtyInputWriter(_core.duplicateWriteHandle, onError);
+
+  @override
   void write(String input) {
     final data = utf8.encode(input);
     _core.write(data);
@@ -61,6 +65,24 @@ final class BlockingPseudoTerminal extends BasePseudoTerminal {
   bool _hasSendPort = false;
   bool _pendingAck = false;
   bool _outCancelled = false;
+  bool _draining = false;
+  final _readerReady = Completer<void>();
+
+  @override
+  Future<void> beginDrain() async {
+    await _readerReady.future;
+    if (_syncProcessed && !_draining) _sendPort.send(false);
+    _draining = true;
+  }
+
+  @override
+  bool kill([ProcessSignal signal = ProcessSignal.sigterm]) {
+    // Closing a ConPTY can wait for the native pipe to drain. The reader
+    // must not be waiting for another UI event while kill() runs there.
+    _draining = true;
+    if (_hasSendPort && _syncProcessed) _sendPort.send(false);
+    return super.kill(signal);
+  }
 
   late final Future<int> _exitCodeFuture;
 
@@ -98,7 +120,9 @@ final class BlockingPseudoTerminal extends BasePseudoTerminal {
       if (first) {
         _sendPort = msg as SendPort;
         _hasSendPort = true;
+        _readerReady.complete();
         first = false;
+        if (_draining && _syncProcessed) _sendPort.send(false);
         if (_pendingAck || _outCancelled) {
           _pendingAck = false;
           ackProcessed();
@@ -139,7 +163,7 @@ final class BlockingPseudoTerminal extends BasePseudoTerminal {
 
   @override
   void ackProcessed() {
-    if (_syncProcessed) {
+    if (_syncProcessed && !_draining) {
       if (_hasSendPort) {
         _sendPort.send(true);
       } else {
@@ -174,13 +198,20 @@ void _readUntilExit(_IsolateArgs<PtyCoreWorker> ctx) async {
   final input = StreamController<List<int>>(sync: true);
 
   final utf8corrupt = Utf8Codec(allowMalformed: true);
-  input.stream.transform(utf8corrupt.decoder).listen(ctx.sendPort.send);
+  var emitted = false;
+  input.stream.transform(utf8corrupt.decoder).listen((text) {
+    if (text.isEmpty) return;
+    emitted = true;
+    ctx.sendPort.send(text);
+  });
 
   final loopController = StreamController<bool>();
 
-  if (ctx.syncProcessed) {
+  var waitForAck = ctx.syncProcessed;
+  if (waitForAck) {
     rp.listen((message) {
-      if (message is bool) {
+      if (message is bool && waitForAck) {
+        if (!message) waitForAck = false;
         loopController.sink.add(message);
       }
     });
@@ -196,13 +227,14 @@ void _readUntilExit(_IsolateArgs<PtyCoreWorker> ctx) async {
         break;
       }
 
+      emitted = false;
       input.sink.add(data);
 
       // when we don't sync with the data processing then just schedule the next loop
       // iteration
       // Otherwise the loop will continue when the processing of the data is
       // finished (signaled via [PseudoTerminal.ackProcessed])
-      if (!ctx.syncProcessed) {
+      if (!waitForAck || !emitted) {
         loopController.sink.add(true);
       }
     }

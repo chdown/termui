@@ -4600,6 +4600,13 @@ final class _OpenOutputFakePty implements PtySession {
 }
 
 final class _FakeAckPseudoTerminal implements PseudoTerminal {
+  @override
+  Future<void> beginDrain() async {}
+
+  @override
+  PtyInputWriter createInputWriter(void Function(Object) onError) =>
+      throw UnsupportedError('This fake uses synchronous input');
+
   final StreamController<String> _out = StreamController<String>.broadcast();
   final Completer<int> _exitCode = Completer<int>();
   int ackCount = 0;

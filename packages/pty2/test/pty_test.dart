@@ -18,6 +18,68 @@ PseudoTerminal _startTrackedPty(String executable, List<String> arguments) {
 }
 
 void main() {
+  test('Initial geometry is visible without a resize', () async {
+    final pty = PseudoTerminal.start(
+      Platform.executable,
+      [_getHelperPath()],
+      initialCols: 123,
+      initialRows: 45,
+    );
+    addTearDown(() => pty.kill(ProcessSignal.sigkill));
+    final output = await pty.out.join().timeout(const Duration(seconds: 10));
+    await pty.exitCode.timeout(const Duration(seconds: 5));
+    expect(output, contains('SIZE:123x45'));
+  });
+
+  test('Invalid initial geometry is rejected before spawning', () {
+    for (final value in [0, -1, 32768]) {
+      expect(
+        () => PseudoTerminal.start('unused', [], initialCols: value),
+        throwsRangeError,
+      );
+      expect(
+        () => PseudoTerminal.start('unused', [], initialRows: value),
+        throwsRangeError,
+      );
+    }
+  });
+
+  test(
+    'Background writer sends native input in order and closes cleanly',
+    () async {
+      final pty = _startTrackedPty(_getShell(), []);
+      final ready = Completer<void>();
+      final output = StringBuffer();
+      final done = Completer<void>();
+      final subscription = pty.out.listen((text) {
+        output.write(text);
+        if (!ready.isCompleted) ready.complete();
+      }, onDone: done.complete);
+      addTearDown(subscription.cancel);
+      final errors = <Object>[];
+      final writer = pty.createInputWriter(errors.add);
+      addTearDown(() async {
+        pty.kill(ProcessSignal.sigkill);
+        await writer.close();
+      });
+      await ready.future.timeout(const Duration(seconds: 10));
+      final newline = Platform.isWindows ? '\r\n' : '\n';
+      expect(writer.add('echo WRITER_FIRST$newline'), isTrue);
+      expect(writer.add('echo WRITER_LAST$newline'), isTrue);
+      expect(writer.add('exit 0$newline'), isTrue);
+      await done.future.timeout(const Duration(seconds: 10));
+      await pty.exitCode.timeout(const Duration(seconds: 5));
+      await writer.close().timeout(const Duration(seconds: 5));
+      expect(output.toString(), contains('WRITER_FIRST'));
+      expect(output.toString(), contains('WRITER_LAST'));
+      expect(
+        output.toString().indexOf('WRITER_FIRST'),
+        lessThan(output.toString().indexOf('WRITER_LAST')),
+      );
+      expect(errors, isEmpty);
+    },
+  );
+
   test('Can instantiate and kill PseudoTerminal', () async {
     for (final delayMs in [0, 5, 25]) {
       final pty = _startTrackedPty(_getShell(), []);

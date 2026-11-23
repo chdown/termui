@@ -1,8 +1,9 @@
 name: pty2
 description: Pty2 for Dart and Flutter. Provides the ability to create processes
   with pseudo terminal file descriptors.
-version: 0.10.0
-repository: https://github.com/jtmcdole/termui/tree/main/packages/pty2
+version: 0.10.0+coderx.1
+publish_to: none
+repository: https://github.com/chdown/termui/tree/codex/coderx-pty2/packages/pty2
 
 resolution: workspace
 

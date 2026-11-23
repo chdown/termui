@@ -1,0 +1,37 @@
+name: CoderX pty2 contracts
+
+on:
+  push:
+    branches: [codex/coderx-pty2]
+    paths:
+      - 'packages/pty2/**'
+      - '.github/workflows/coderx-pty2.yml'
+  pull_request:
+    branches: [codex/coderx-pty2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pty2:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          flutter-version: '3.50.0'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed .
+        working-directory: packages/pty2
+      - run: dart analyze --fatal-infos
+        working-directory: packages/pty2
+      - run: dart test --reporter expanded
+        working-directory: packages/pty2
