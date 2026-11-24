@@ -24,3 +24,4 @@ tmp/
 browser_trace*.json.gz
 **/.DS_Store
 .env*
+.antigravitycli/
