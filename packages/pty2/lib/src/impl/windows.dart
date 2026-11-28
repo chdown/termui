@@ -340,8 +340,8 @@ final class PtyCoreWindows implements PtyCore, Finalizable {
       _closeRawHandle(hOutWritePipe.value);
     }
 
-    if (pipe1.error != win32.ERROR_SUCCESS ||
-        pipe2.error != win32.ERROR_SUCCESS) {
+    // CreatePipe 成功时不清除线程错误码，必须按 BOOL 返回值判断。
+    if (!pipe1.value || !pipe2.value) {
       closeConPtyPipes();
       return null;
     }
